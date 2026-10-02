@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 
 import asyncio
-import base64
-import hashlib
 import inspect
 import logging
 import os
@@ -33,10 +31,14 @@ from telegram.ext import (
 # CONFIG
 # ============================================================
 
-BOT_TOKEN = os.getenv(
-    "8706955926:AAGEZ0vpCVmClxKZ1qIgMPGugAwLmqkcexA",
-    "8543053388:AAGi1jogpb4QbvrpJRflzGA3wZcgiKjflIw"
-).strip()
+# توکن فقط از متغیر محیطی خوانده می‌شود
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+
+if not BOT_TOKEN:
+    raise RuntimeError(
+        "BOT_TOKEN تنظیم نشده است. "
+        "ابتدا export BOT_TOKEN='YOUR_TOKEN' را اجرا کن."
+    )
 
 OWNER_ID = int(os.getenv("OWNER_ID", "7252911263"))
 
@@ -44,7 +46,6 @@ DB_FILE = os.getenv("DB_FILE", "bot.db")
 
 IMAGE_MODEL = os.getenv("IMAGE_MODEL", "flux")
 
-# طبق سرویس اصلی که از سورس استخراج شد
 IMAGE_WIDTH = int(os.getenv("IMAGE_WIDTH", "768"))
 IMAGE_HEIGHT = int(os.getenv("IMAGE_HEIGHT", "768"))
 
@@ -52,29 +53,24 @@ MAX_PROMPT = int(os.getenv("MAX_PROMPT", "1500"))
 
 DEFAULT_LIMIT = int(os.getenv("DEFAULT_LIMIT", "5"))
 
-# اگر API Key جدید Pollinations داری می‌توانی در محیط قرار بدهی.
-# اجباری نیست برای endpoint قدیمی.
+# اختیاری
 POLLINATIONS_API_KEY = os.getenv(
     "POLLINATIONS_API_KEY",
     ""
 ).strip()
 
 
-if not BOT_TOKEN or BOT_TOKEN == "8944172263:AAHOEjJs8wuZWEhxyBppis_nwOyBjd_rmC4":
-    raise RuntimeError(
-        "BOT_TOKEN را داخل کد یا متغیر محیطی BOT_TOKEN قرار بده."
-    )
-
-
 # ============================================================
 # POLLINATIONS ENDPOINTS
 # ============================================================
 
-# Endpoint موجود در سورس اصلی
-LEGACY_IMAGE_API = "https://image.pollinations.ai/prompt"
+LEGACY_IMAGE_API = (
+    "https://image.pollinations.ai/prompt"
+)
 
-# Endpoint جدید Pollinations
-NEW_IMAGE_API = "https://gen.pollinations.ai/image"
+NEW_IMAGE_API = (
+    "https://gen.pollinations.ai/image"
+)
 
 
 # ============================================================
@@ -99,7 +95,6 @@ class DB:
         self.path = path
 
         with self.c() as c:
-
             c.executescript(
                 """
                 PRAGMA journal_mode=WAL;
@@ -136,8 +131,8 @@ class DB:
 
             c.execute(
                 """
-                INSERT OR IGNORE INTO settings(key,value)
-                VALUES('limit',?)
+                INSERT OR IGNORE INTO settings(key, value)
+                VALUES('limit', ?)
                 """,
                 (str(DEFAULT_LIMIT),)
             )
@@ -163,6 +158,10 @@ class DB:
                 args
             ).fetchall()
 
+    # --------------------------------------------------------
+    # USERS
+    # --------------------------------------------------------
+
     def add_user(self, user):
 
         self.run(
@@ -186,42 +185,11 @@ class DB:
             )
         )
 
-    def add_group(self, chat):
-
-        self.run(
-            """
-            INSERT INTO groups(
-                chat_id,
-                title,
-                username
-            )
-            VALUES(?,?,?)
-
-            ON CONFLICT(chat_id)
-            DO UPDATE SET
-                title=excluded.title,
-                username=excluded.username
-            """,
-            (
-                chat.id,
-                chat.title or "",
-                chat.username or ""
-            )
-        )
-
     def users(self):
         return [
             r["user_id"]
             for r in self.rows(
                 "SELECT user_id FROM users"
-            )
-        ]
-
-    def groups(self):
-        return [
-            r["chat_id"]
-            for r in self.rows(
-                "SELECT chat_id FROM groups"
             )
         ]
 
@@ -251,6 +219,45 @@ class DB:
             """,
             (user_id,)
         )
+
+    # --------------------------------------------------------
+    # GROUPS
+    # --------------------------------------------------------
+
+    def add_group(self, chat):
+
+        self.run(
+            """
+            INSERT INTO groups(
+                chat_id,
+                title,
+                username
+            )
+            VALUES(?,?,?)
+
+            ON CONFLICT(chat_id)
+            DO UPDATE SET
+                title=excluded.title,
+                username=excluded.username
+            """,
+            (
+                chat.id,
+                chat.title or "",
+                chat.username or ""
+            )
+        )
+
+    def groups(self):
+        return [
+            r["chat_id"]
+            for r in self.rows(
+                "SELECT chat_id FROM groups"
+            )
+        ]
+
+    # --------------------------------------------------------
+    # ADMINS
+    # --------------------------------------------------------
 
     def admins(self):
 
@@ -288,6 +295,10 @@ class DB:
             (user_id,)
         )
 
+    # --------------------------------------------------------
+    # CHANNELS
+    # --------------------------------------------------------
+
     def channels(self):
 
         return [
@@ -317,6 +328,10 @@ class DB:
             (username,)
         )
 
+    # --------------------------------------------------------
+    # SETTINGS
+    # --------------------------------------------------------
+
     def setting(self, key, default=None):
 
         rows = self.rows(
@@ -337,8 +352,8 @@ class DB:
 
         self.run(
             """
-            INSERT INTO settings(key,value)
-            VALUES(?,?)
+            INSERT INTO settings(key, value)
+            VALUES(?, ?)
 
             ON CONFLICT(key)
             DO UPDATE SET
@@ -371,17 +386,25 @@ STATE_LIMIT = "limit"
 # BUTTONS
 # ============================================================
 
-# Telegram Bot API 9.6+ supports native button styles:
-# primary = blue, success = green, danger = red.
-# python-telegram-bot 22.7+ exposes this as InlineKeyboardButton(style=...).
-# Compatibility fallback prevents crashes on older PTB versions.
 _PT_BUTTON_STYLE_SUPPORTED = (
-    "style" in inspect.signature(InlineKeyboardButton).parameters
+    "style" in inspect.signature(
+        InlineKeyboardButton
+    ).parameters
 )
 
 
-def B(text, callback_data=None, url=None, style="primary"):
-    """Create a Telegram inline button with native color styling."""
+def B(
+    text,
+    callback_data=None,
+    url=None,
+    style="primary"
+):
+    """
+    ساخت دکمه تلگرام
+    اگر نسخه PTB از style پشتیبانی کند،
+    استایل native دکمه اعمال می‌شود.
+    """
+
     kwargs = {}
 
     if url is not None:
@@ -389,48 +412,102 @@ def B(text, callback_data=None, url=None, style="primary"):
     else:
         kwargs["callback_data"] = callback_data
 
-    if _PT_BUTTON_STYLE_SUPPORTED and style in (
-        "primary", "success", "danger"
+    if (
+        _PT_BUTTON_STYLE_SUPPORTED
+        and style in (
+            "primary",
+            "success",
+            "danger"
+        )
     ):
         kwargs["style"] = style
 
-    return InlineKeyboardButton(text=text, **kwargs)
+    return InlineKeyboardButton(
+        text=text,
+        **kwargs
+    )
 
 
 def user_kb():
+
     return InlineKeyboardMarkup(
         [
             [
-                B("🎨 ساخت تصویر", "make", style="primary"),
-                B("📊 سهمیه", "quota", style="success"),
+                B(
+                    "🎨 ساخت تصویر",
+                    "make",
+                    style="primary"
+                ),
+                B(
+                    "📊 سهمیه",
+                    "quota",
+                    style="success"
+                ),
             ],
             [
-                B("ℹ️ راهنما", "help", style="primary"),
-            ],
+                B(
+                    "ℹ️ راهنما",
+                    "help",
+                    style="primary"
+                ),
+            ]
         ]
     )
 
 
 def admin_kb():
+
     return InlineKeyboardMarkup(
         [
             [
-                B("➕ عضویت اجباری", "a:addch", style="success"),
-                B("➖ حذف عضویت", "a:delch", style="danger"),
+                B(
+                    "➕ عضویت اجباری",
+                    "a:addch",
+                    style="success"
+                ),
+                B(
+                    "➖ حذف عضویت",
+                    "a:delch",
+                    style="danger"
+                ),
             ],
             [
-                B("👤 افزودن ادمین", "a:addad", style="success"),
-                B("🗑 حذف ادمین", "a:delad", style="danger"),
+                B(
+                    "👤 افزودن ادمین",
+                    "a:addad",
+                    style="success"
+                ),
+                B(
+                    "🗑 حذف ادمین",
+                    "a:delad",
+                    style="danger"
+                ),
             ],
             [
-                B("📨 پیام همگانی", "a:broadcast", style="primary"),
+                B(
+                    "📨 پیام همگانی",
+                    "a:broadcast",
+                    style="primary"
+                ),
             ],
             [
-                B("📢 تبلیغات", "a:advertising", style="primary"),
+                B(
+                    "📢 تبلیغات",
+                    "a:advertising",
+                    style="primary"
+                ),
             ],
             [
-                B("📊 آمار", "a:stats", style="primary"),
-                B("🔢 محدودیت", "a:limit", style="success"),
+                B(
+                    "📊 آمار",
+                    "a:stats",
+                    style="primary"
+                ),
+                B(
+                    "🔢 محدودیت",
+                    "a:limit",
+                    style="success"
+                ),
             ],
         ]
     )
@@ -444,6 +521,8 @@ async def subscribed(bot, user_id):
 
     channels = db.channels()
 
+    # اگر کانالی تنظیم نشده باشد،
+    # عضویت اجباری غیرفعال است.
     if not channels:
         return True
 
@@ -482,6 +561,7 @@ async def gate(update, context):
     if not message:
         return False
 
+    # عضویت اجباری فقط برای چت خصوصی
     if message.chat.type != ChatType.PRIVATE:
         return True
 
@@ -592,8 +672,10 @@ async def request_image(
             "AI-Image-Bot/2.0"
         ),
         "Accept": (
-            "image/png,image/jpeg,"
-            "image/webp,image/*,*/*"
+            "image/png,"
+            "image/jpeg,"
+            "image/webp,"
+            "image/*,*/*"
         ),
         "Cache-Control": "no-cache",
         "Pragma": "no-cache",
@@ -618,11 +700,9 @@ async def request_image(
 
         status = response.status
 
-        content_type = (
-            response.headers.get(
-                "Content-Type",
-                ""
-            )
+        content_type = response.headers.get(
+            "Content-Type",
+            ""
         )
 
         raw = await response.read()
@@ -642,7 +722,6 @@ async def request_image(
                     "utf-8",
                     errors="replace"
                 )
-
             except Exception:
                 error_text = repr(raw[:500])
 
@@ -657,7 +736,7 @@ async def request_image(
                 "Pollinations returned an empty response."
             )
 
-        # بررسی واقعی بودن خروجی تصویر
+        # بررسی واقعی بودن تصویر
         try:
 
             with Image.open(
@@ -700,7 +779,7 @@ async def get_image(prompt):
         errors = []
 
         # ====================================================
-        # 1. سرویس دقیق سورس اصلی
+        # 1. سرویس اصلی
         # ====================================================
 
         try:
@@ -730,7 +809,7 @@ async def get_image(prompt):
             )
 
         # ====================================================
-        # 2. endpoint جدید Pollinations
+        # 2. سرویس جدید
         # ====================================================
 
         try:
@@ -779,7 +858,15 @@ async def generate(
 
     message = update.effective_message
 
-    user_id = update.effective_user.id
+    if not message:
+        return
+
+    user = update.effective_user
+
+    if not user:
+        return
+
+    user_id = user.id
 
     limit = int(
         db.setting(
@@ -829,7 +916,10 @@ async def generate(
             prompt
         )
 
-        # تبدیل به PNG واقعی
+        # ====================================================
+        # تبدیل خروجی به PNG
+        # ====================================================
+
         with Image.open(
             BytesIO(raw)
         ) as image:
@@ -853,7 +943,7 @@ async def generate(
             png_data = output.getvalue()
 
         await message.reply_document(
-            document=png_data,
+            document=BytesIO(png_data),
             filename="AI_Image.png",
             caption=(
                 "✨ تصویر با موفقیت ساخته شد.\n\n"
@@ -872,17 +962,22 @@ async def generate(
         except Exception:
             pass
 
-    except Exception as e:
+    except Exception:
 
         log.exception(
             "IMAGE GENERATION FAILED"
         )
 
-        await status_message.edit_text(
-            "❌ ساخت تصویر انجام نشد.\n\n"
-            "🔧 خطای سرویس در لاگ برنامه ثبت شد.\n"
-            "چند لحظه بعد دوباره امتحان کنید."
-        )
+        try:
+
+            await status_message.edit_text(
+                "❌ ساخت تصویر انجام نشد.\n\n"
+                "🔧 خطای سرویس در لاگ برنامه ثبت شد.\n"
+                "چند لحظه بعد دوباره امتحان کنید."
+            )
+
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -895,6 +990,9 @@ async def start(
 ):
 
     user = update.effective_user
+
+    if not user:
+        return
 
     db.add_user(
         user
@@ -927,9 +1025,12 @@ async def admin_cmd(
     context
 ):
 
-    if db.admin(
-        update.effective_user.id
-    ):
+    user = update.effective_user
+
+    if not user:
+        return
+
+    if db.admin(user.id):
 
         await update.effective_message.reply_text(
             "🛠 <b>پنل مدیریت</b>",
@@ -949,13 +1050,16 @@ async def callback(
 
     query = update.callback_query
 
+    if not query:
+        return
+
     await query.answer()
 
     data = query.data
 
-    # --------------------------------------------------------
+    # ========================================================
     # USER BUTTONS
-    # --------------------------------------------------------
+    # ========================================================
 
     if data == "make":
 
@@ -1027,9 +1131,9 @@ async def callback(
 
         return
 
-    # --------------------------------------------------------
+    # ========================================================
     # ADMIN BUTTONS
-    # --------------------------------------------------------
+    # ========================================================
 
     if not data.startswith("a:"):
         return
@@ -1123,12 +1227,17 @@ async def admin_state_message(
 ):
 
     if not update.message:
-        return
+        return False
+
+    user = update.effective_user
+
+    if not user:
+        return False
 
     if not db.admin(
-        update.effective_user.id
+        user.id
     ):
-        return
+        return False
 
     state = context.user_data.get(
         "admin_state"
@@ -1137,11 +1246,11 @@ async def admin_state_message(
     if not state:
         return False
 
-    text = update.message.text.strip()
+    text = (update.message.text or "").strip()
 
-    # --------------------------------------------------------
+    # ========================================================
     # ADD CHANNEL
-    # --------------------------------------------------------
+    # ========================================================
 
     if state == "addch":
 
@@ -1168,9 +1277,9 @@ async def admin_state_message(
 
         return True
 
-    # --------------------------------------------------------
+    # ========================================================
     # DELETE CHANNEL
-    # --------------------------------------------------------
+    # ========================================================
 
     if state == "delch":
 
@@ -1189,9 +1298,9 @@ async def admin_state_message(
 
         return True
 
-    # --------------------------------------------------------
+    # ========================================================
     # ADD ADMIN
-    # --------------------------------------------------------
+    # ========================================================
 
     if state == "addad":
 
@@ -1222,9 +1331,9 @@ async def admin_state_message(
 
         return True
 
-    # --------------------------------------------------------
+    # ========================================================
     # DELETE ADMIN
-    # --------------------------------------------------------
+    # ========================================================
 
     if state == "delad":
 
@@ -1263,9 +1372,9 @@ async def admin_state_message(
 
         return True
 
-    # --------------------------------------------------------
+    # ========================================================
     # BROADCAST
-    # --------------------------------------------------------
+    # ========================================================
 
     if state == "broadcast":
 
@@ -1288,9 +1397,9 @@ async def admin_state_message(
 
         return True
 
-    # --------------------------------------------------------
+    # ========================================================
     # ADVERTISING
-    # --------------------------------------------------------
+    # ========================================================
 
     if state == "advertising":
 
@@ -1320,9 +1429,9 @@ async def admin_state_message(
 
         return True
 
-    # --------------------------------------------------------
+    # ========================================================
     # LIMIT
-    # --------------------------------------------------------
+    # ========================================================
 
     if state == "limit":
 
@@ -1394,6 +1503,7 @@ async def send_many(
                 e
             )
 
+        # جلوگیری از ارسال خیلی سریع
         await asyncio.sleep(
             0.05
         )
@@ -1417,11 +1527,17 @@ async def private_message(
 
     user = update.effective_user
 
+    if not user:
+        return
+
     db.add_user(
         user
     )
 
+    # --------------------------------------------------------
     # Admin state اولویت دارد
+    # --------------------------------------------------------
+
     if await admin_state_message(
         update,
         context
@@ -1434,7 +1550,11 @@ async def private_message(
     ):
         return
 
-    text = message.text.strip()
+    text = (message.text or "").strip()
+
+    # --------------------------------------------------------
+    # ADMIN PANEL
+    # --------------------------------------------------------
 
     if (
         text == "پنل مدیریت"
@@ -1448,6 +1568,10 @@ async def private_message(
         )
 
         return
+
+    # --------------------------------------------------------
+    # IMAGE PROMPT
+    # --------------------------------------------------------
 
     prompt = prompt_of(
         text
@@ -1489,8 +1613,10 @@ async def group_message(
         message.chat
     )
 
+    text = (message.text or "").strip()
+
     prompt = prompt_of(
-        message.text
+        text
     )
 
     if prompt:
@@ -1555,7 +1681,10 @@ def main():
         .build()
     )
 
-    # Commands
+    # ========================================================
+    # COMMANDS
+    # ========================================================
+
     application.add_handler(
         CommandHandler(
             "start",
@@ -1570,14 +1699,20 @@ def main():
         )
     )
 
-    # Callback buttons
+    # ========================================================
+    # CALLBACK BUTTONS
+    # ========================================================
+
     application.add_handler(
         CallbackQueryHandler(
             callback
         )
     )
 
-    # Group messages
+    # ========================================================
+    # GROUP MESSAGES
+    # ========================================================
+
     application.add_handler(
         MessageHandler(
             filters.ChatType.GROUPS
@@ -1587,7 +1722,10 @@ def main():
         )
     )
 
-    # Private messages
+    # ========================================================
+    # PRIVATE MESSAGES
+    # ========================================================
+
     application.add_handler(
         MessageHandler(
             filters.ChatType.PRIVATE
@@ -1610,6 +1748,10 @@ def main():
         allowed_updates=Update.ALL_TYPES
     )
 
+
+# ============================================================
+# RUN
+# ============================================================
 
 if __name__ == "__main__":
     main()
